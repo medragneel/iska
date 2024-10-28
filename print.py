@@ -30,11 +30,12 @@ class PrinterSystem:
                 raise
 
     def get_available_printers(self):
-        """Get list of available printers"""
         try:
             if self.os_type == "windows":
                 printers = []
-                for printer in self.win32print.EnumPrinters(2):
+                for printer in self.win32print.EnumPrinters(
+                    2
+                ):  # 2 = PRINTER_ENUM_LOCAL
                     printers.append(printer[2])
                 return printers
 
@@ -43,41 +44,54 @@ class PrinterSystem:
                     ["lpstat", "-a"], capture_output=True, text=True
                 )
                 if result.returncode == 0 and result.stdout:
-                    # Parse printer names from lpstat output
-                    printers = []
-                    for line in result.stdout.splitlines():
-                        if line.strip():
-                            printer_name = line.split()[0]
-                            printers.append(printer_name)
-                    return printers
-
-                # Try alternative command if lpstat -a fails
-                result = subprocess.run(
-                    ["lpinfo", "-v"], capture_output=True, text=True
-                )
-                if result.returncode == 0 and result.stdout:
-                    printers = []
-                    for line in result.stdout.splitlines():
-                        if "network" in line or "usb" in line:
-                            printer_name = line.split()[-1]
-                            printers.append(printer_name)
-                    return printers
-
+                    return [line.split()[0] for line in result.stdout.splitlines()]
             return []
 
         except Exception as e:
             logger.error(f"Error getting printers: {str(e)}")
             return []
 
+    def print_file_windows(self, filename, printer_name):
+        try:
+            # Open the printer
+            handle = self.win32print.OpenPrinter(printer_name)
+            try:
+                # Start a print job
+                job = self.win32print.StartDocPrinter(
+                    handle, 1, ("PDF Document", None, "RAW")
+                )
+                try:
+                    # Start a page
+                    self.win32print.StartPagePrinter(handle)
+
+                    # Write the file directly to the printer
+                    with open(filename, "rb") as f:
+                        data = f.read()
+                        self.win32print.WritePrinter(handle, data)
+
+                    # End the page
+                    self.win32print.EndPagePrinter(handle)
+
+                finally:
+                    # End the document
+                    self.win32print.EndDocPrinter(handle)
+            finally:
+                # Close the printer
+                self.win32print.ClosePrinter(handle)
+
+            logger.info(f"Successfully sent {filename} to printer {printer_name}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error printing file {filename} to {printer_name}: {str(e)}")
+            return False
+
     def print_file(self, file_path, printer_name=None):
         try:
             if self.os_type == "windows":
                 if not printer_name:
                     printer_name = self.win32print.GetDefaultPrinter()
-
-                self.win32api.ShellExecute(
-                    0, "print", file_path, f'/d:"{printer_name}"', ".", 0
-                )
+                return self.print_file_windows(file_path, printer_name)
 
             elif self.os_type in ["darwin", "linux"]:
                 command = ["lp"]
@@ -85,17 +99,15 @@ class PrinterSystem:
                     command.extend(["-d", printer_name])
                 command.append(file_path)
 
-                # Add -o raw for direct printing
                 result = subprocess.run(command, capture_output=True, text=True)
                 if result.returncode != 0:
                     raise Exception(f"Printing failed: {result.stderr}")
 
+                logger.info(f"Successfully sent to printer: {file_path}")
+                return True
+
             else:
                 raise Exception(f"Unsupported operating system: {self.os_type}")
-
-            time.sleep(2)
-            logger.info(f"Successfully sent to printer: {file_path}")
-            return True
 
         except Exception as e:
             logger.error(f"Error printing {file_path}: {str(e)}")
@@ -103,18 +115,18 @@ class PrinterSystem:
 
 
 def select_printer(printer_system):
-    """Allow user to select a printer from available printers"""
     printers = printer_system.get_available_printers()
 
     if not printers:
-        print("\nNo printers found! Please check if:")
-        print("1. Printers are properly connected")
-        print("2. CUPS is installed (for Linux/macOS)")
-        print("3. Printer drivers are installed")
-        print("\nTo install CUPS on Linux:")
-        print("sudo apt-get install cups cups-client")
-        print("sudo systemctl start cups")
-        print("sudo systemctl enable cups")
+        print("\nNo printers found!")
+        if platform.system().lower() == "windows":
+            print("Please check if:")
+            print("1. Printers are properly connected and turned on")
+            print("2. Printer drivers are installed")
+            print("3. Printers are added to Windows")
+            print("\nTo add a printer in Windows:")
+            print("1. Go to Settings > Devices > Printers & scanners")
+            print("2. Click 'Add a printer or scanner'")
         return None
 
     print("\nAvailable printers:")
@@ -137,9 +149,6 @@ def select_printer(printer_system):
 
 
 def print_pdfs_in_folders(base_directory, printer_system, printer_name=None):
-    """
-    Go through each folder and print all PDFs in order.
-    """
     logger.info(f"Starting to process directory: {base_directory}")
 
     if not os.path.exists(base_directory):
@@ -178,8 +187,10 @@ def print_pdfs_in_folders(base_directory, printer_system, printer_name=None):
 
             if printer_system.print_file(pdf_path, printer_name):
                 total_printed += 1
+                print(f"Successfully sent {pdf_file} to printer")
             else:
                 failed_prints.append(pdf_path)
+                print(f"Failed to print {pdf_file}")
 
             time.sleep(3)
 
@@ -194,13 +205,12 @@ def print_pdfs_in_folders(base_directory, printer_system, printer_name=None):
 
 
 def main():
-    base_directory = "split_pdfs"  # Change this to your directory path
+    base_directory = "split_pdfs"
 
     try:
         printer_system = PrinterSystem()
         print(f"Operating System: {platform.system()}")
 
-        # Let user select printer
         printer_name = select_printer(printer_system)
         if not printer_name:
             print("No printer selected. Exiting.")
@@ -222,3 +232,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
